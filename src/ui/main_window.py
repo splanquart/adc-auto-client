@@ -16,6 +16,7 @@ from PyQt6.QtGui import QFont
 
 from src.ui.widgets.servo_indicator import ServoIndicator
 from src.services.serial_service import SerialService
+from src.models.adc import AdcModel
 
 
 class MainWindow(QMainWindow):
@@ -25,6 +26,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.logger = logging.getLogger(__name__)
         self.serial_service = SerialService()
+        self.adc_model = AdcModel()
         self.init_ui()
         
     def init_ui(self):
@@ -111,9 +113,12 @@ class MainWindow(QMainWindow):
         buttons_layout = QHBoxLayout()
         
         self.connect_button = QPushButton("Connecter")
+        self.reset_button = QPushButton("Réinitialiser")
+        self.reset_button.setEnabled(False)  # Désactivé jusqu'à la connexion
         self.start_server_button = QPushButton("Démarrer Serveur ASCOM")
         
         buttons_layout.addWidget(self.connect_button)
+        buttons_layout.addWidget(self.reset_button)
         buttons_layout.addWidget(self.start_server_button)
         
         main_layout.addLayout(buttons_layout)
@@ -141,39 +146,91 @@ class MainWindow(QMainWindow):
         self.level_slider.valueChanged.connect(self.on_level_changed)
         self.strength_slider.valueChanged.connect(self.on_strength_changed)
         self.connect_button.clicked.connect(self.on_connect_clicked)
+        self.reset_button.clicked.connect(self.on_reset_clicked)
         self.start_server_button.clicked.connect(self.on_start_server_clicked)
         self.send_command_button.clicked.connect(self.on_send_command_clicked)
         
         self.logger.info("Interface utilisateur initialisée")
+    
+    def update_ui_from_model(self):
+        """Met à jour l'interface utilisateur à partir du modèle ADC."""
+        # Mise à jour des sliders sans déclencher les signaux
+        self.level_slider.blockSignals(True)
+        self.level_slider.setValue(self.adc_model.adc.level)
+        self.level_slider.blockSignals(False)
+        self.level_value_label.setText(f"{self.adc_model.adc.level}°")
+        
+        self.strength_slider.blockSignals(True)
+        self.strength_slider.setValue(self.adc_model.adc.strength)
+        self.strength_slider.blockSignals(False)
+        self.strength_value_label.setText(str(self.adc_model.adc.strength))
+        
+        # Mise à jour des indicateurs de servo
+        if self.adc_model.adc.angles:
+            # Récupérer les angles des servos
+            angle1 = self.adc_model.adc.angles.get("angle1", 45)
+            angle2 = self.adc_model.adc.angles.get("angle2", 135)
+            
+            # Afficher directement les angles des servos (0-180°)
+            self.servo1_indicator.set_angle(angle1)
+            self.servo2_indicator.set_angle(angle2)
+    
+    def process_response(self, response):
+        """Traite une réponse du périphérique."""
+        try:
+            if not response:
+                return
+                
+            # Mettre à jour le modèle avec la réponse
+            if self.adc_model.update_from_json(response):
+                # Mettre à jour l'interface utilisateur
+                self.update_ui_from_model()
+                
+                # Afficher la réponse dans la barre de statut
+                self.status_bar.showMessage(f"Réponse: {response}")
+                self.logger.info("Modèle mis à jour avec succès")
+            else:
+                self.logger.warning(f"Impossible de mettre à jour le modèle avec la réponse: {response}")
+        except ValueError as e:
+            self.logger.error(f"Erreur de valeur lors du traitement de la réponse: {e}")
+        except KeyError as e:
+            self.logger.error(f"Clé manquante lors du traitement de la réponse: {e}")
+        except Exception as e:
+            self.logger.error(f"Erreur inattendue lors du traitement de la réponse: {e}")
     
     @pyqtSlot(int)
     def on_level_changed(self, value):
         """Gère le changement de valeur du slider de level."""
         self.level_value_label.setText(f"{value}°")
         
-        # Conversion de la valeur -45..45 en angle pour l'indicateur (0-360)
-        indicator_angle = (value + 45) * 4  # Convertit -45..45 en 0-360 degrés
-        self.servo1_indicator.set_angle(indicator_angle)
-        self.logger.debug(f"Level changé: {value}°")
-        
         # Envoi de la commande au microcontrôleur si connecté
         if self.serial_service.is_connected:
             command = f"LEVEL={value}"
             self.logger.debug(f"Envoi de la commande: {command}")
             self.serial_service.send_command(command)
+            
+            # Lecture et traitement de la réponse
+            response = self.serial_service.read_line()
+            if response:
+                self.logger.info(f"Réponse à LEVEL={value}: {response}")
+                self.process_response(response)
     
     @pyqtSlot(int)
     def on_strength_changed(self, value):
         """Gère le changement de valeur du slider de strength."""
         self.strength_value_label.setText(str(value))
-        self.servo2_indicator.set_angle(value * 3.6)  # Convertit 0-100 en 0-360 degrés
-        self.logger.debug(f"Strength changé: {value}")
         
         # Envoi de la commande au microcontrôleur si connecté
         if self.serial_service.is_connected:
             command = f"STRENGTH={value}"
             self.logger.debug(f"Envoi de la commande: {command}")
             self.serial_service.send_command(command)
+            
+            # Lecture et traitement de la réponse
+            response = self.serial_service.read_line()
+            if response:
+                self.logger.info(f"Réponse à STRENGTH={value}: {response}")
+                self.process_response(response)
     
     @pyqtSlot()
     def on_connect_clicked(self):
@@ -185,6 +242,7 @@ class MainWindow(QMainWindow):
                 self.status_bar.showMessage("Déconnecté")
                 self.connect_button.setText("Connecter")
                 self.send_command_button.setEnabled(False)
+                self.reset_button.setEnabled(False)
             else:
                 self.status_bar.showMessage("Échec de la déconnexion")
             return
@@ -199,6 +257,7 @@ class MainWindow(QMainWindow):
                 self.status_bar.showMessage(f"Connecté à {port}")
                 self.connect_button.setText("Déconnecter")
                 self.send_command_button.setEnabled(True)
+                self.reset_button.setEnabled(True)
                 
                 # Envoi de la commande STATUS
                 self.logger.info("Envoi de la commande STATUS")
@@ -209,15 +268,39 @@ class MainWindow(QMainWindow):
                 if response:
                     self.logger.info(f"Réponse à STATUS: {response}")
                     self.status_bar.showMessage(f"Connecté à {port} - Status: {response}")
+                    self.process_response(response)
+                    
+                    # Récupérer l'état actuel du level et strength
+                    self.serial_service.send_command("LEVEL")
+                    response = self.serial_service.read_line()
+                    if response:
+                        self.logger.info(f"Réponse à LEVEL: {response}")
+                        self.process_response(response)
+                    
+                    self.serial_service.send_command("STRENGTH")
+                    response = self.serial_service.read_line()
+                    if response:
+                        self.logger.info(f"Réponse à STRENGTH: {response}")
+                        self.process_response(response)
                 else:
                     self.logger.warning("Pas de réponse à la commande STATUS")
             else:
                 self.status_bar.showMessage(f"Échec de la connexion à {port}")
-        except Exception as e:
-            self.logger.error(f"Erreur lors de la connexion: {str(e)}")
+        except ConnectionError as e:
+            self.logger.error(f"Erreur de connexion: {e}")
             QMessageBox.critical(self, "Erreur de connexion", 
-                                f"Impossible de se connecter à {port}:\n{str(e)}")
-            self.status_bar.showMessage(f"Erreur de connexion: {str(e)}")
+                                f"Impossible de se connecter à {port}:\n{e}")
+            self.status_bar.showMessage(f"Erreur de connexion: {e}")
+        except TimeoutError as e:
+            self.logger.error(f"Timeout de connexion: {e}")
+            QMessageBox.critical(self, "Timeout de connexion", 
+                                f"Délai d'attente dépassé pour la connexion à {port}:\n{e}")
+            self.status_bar.showMessage(f"Timeout de connexion: {e}")
+        except Exception as e:
+            self.logger.error(f"Erreur inattendue lors de la connexion: {e}")
+            QMessageBox.critical(self, "Erreur de connexion", 
+                                f"Impossible de se connecter à {port}:\n{e}")
+            self.status_bar.showMessage(f"Erreur de connexion: {e}")
     
     @pyqtSlot()
     def on_start_server_clicked(self):
@@ -245,11 +328,34 @@ class MainWindow(QMainWindow):
             if response:
                 self.logger.info(f"Réponse: {response}")
                 self.status_bar.showMessage(f"Réponse: {response}")
+                self.process_response(response)
             else:
                 self.logger.warning(f"Pas de réponse à la commande: {command}")
-                self.status_bar.showMessage(f"Commande envoyée, pas de réponse")
+                self.status_bar.showMessage("Commande envoyée, pas de réponse")
         else:
-            self.status_bar.showMessage(f"Échec de l'envoi de la commande")
+            self.status_bar.showMessage("Échec de l'envoi de la commande")
             
         # Effacer le champ de saisie
         self.command_input.clear()
+
+    @pyqtSlot()
+    def on_reset_clicked(self):
+        """Gère le clic sur le bouton de réinitialisation."""
+        if not self.serial_service.is_connected:
+            self.status_bar.showMessage("Pas de connexion active")
+            return
+            
+        self.logger.info("Envoi de la commande RESET")
+        
+        if self.serial_service.send_command("RESET"):
+            # Lecture de la réponse
+            response = self.serial_service.read_line()
+            if response:
+                self.logger.info("Réponse à RESET: %s", response)
+                self.status_bar.showMessage("Réinitialisation effectuée")
+                self.process_response(response)
+            else:
+                self.logger.warning("Pas de réponse à la commande RESET")
+                self.status_bar.showMessage("Commande RESET envoyée, pas de réponse")
+        else:
+            self.status_bar.showMessage("Échec de l'envoi de la commande RESET")

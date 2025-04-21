@@ -6,11 +6,11 @@ Ce document décrit les commandes disponibles pour communiquer avec le microcont
 
 | Commande | Format | Description | Exemple de réponse |
 |----------|--------|-------------|-------------------|
-| `LEVEL` | `LEVEL` | Affiche le niveau actuel | `{"source":"system","type":"data","command":"level","level":0}` |
-| `LEVEL=n` | `LEVEL=-45..45` | Définit le niveau entre -45° et +45° | - |
-| `STRENGTH` | `STRENGTH` | Affiche la force actuelle | `{"source":"system","type":"data","command":"strength","strength":50}` |
-| `STRENGTH=n` | `STRENGTH=0..100` | Définit la force entre 0 et 100% | - |
-| `RESET` | `RESET` | Réinitialise la position | `{"source":"system","type":"data","command":"reset","status":"ok"}` |
+| `LEVEL` | `LEVEL` | Affiche le niveau actuel | `{"source":"system","type":"data","command":"level","level":0,"adc":{"level":0,"strength":50,"angles":{"angle1":45,"angle2":135}}}` |
+| `LEVEL=n` | `LEVEL=-45..45` | Définit le niveau entre -45° et +45° | `{"source":"system","type":"data","command":"level","level":-30,"adc":{"level":-30,"strength":50,"angles":{"angle1":30,"angle2":120}}}` |
+| `STRENGTH` | `STRENGTH` | Affiche la force actuelle | `{"source":"system","type":"data","command":"strength","strength":50,"adc":{"level":0,"strength":50,"angles":{"angle1":45,"angle2":135}}}` |
+| `STRENGTH=n` | `STRENGTH=0..100` | Définit la force entre 0 et 100% | `{"source":"system","type":"data","command":"strength","strength":75,"adc":{"level":0,"strength":75,"angles":{"angle1":33,"angle2":147}}}` |
+| `RESET` | `RESET` | Réinitialise la position | `{"source":"system","type":"data","command":"reset","status":"ok","adc":{"level":0,"strength":50,"angles":{"angle1":45,"angle2":135}},"angles":{"angle1":45,"angle2":135}}` |
 | `STATUS` | `STATUS` | Affiche l'état complet du système | `{"source":"system","type":"data","command":"status","ready":true,"servo1":{...},"servo2":{...},"adcManager":{...}}` |
 | `DEBUG` | `DEBUG` | Affiche l'état du debug | `{"source":"system","type":"data","command":"debug","debug":{"adc":false,"servo1":false,"servo2":false}}` |
 | `DEBUG=on/off` | `DEBUG=on` | Active/désactive le debug global | - |
