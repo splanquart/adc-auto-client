@@ -78,7 +78,9 @@ class ServoIndicator(QWidget):
             if i % 90 == 0:
                 text_x = center_x + (size/2 + 15) * math.cos(angle_rad) - 10
                 text_y = center_y + (size/2 + 15) * math.sin(angle_rad) + 15
-                painter.drawText(int(text_x), int(text_y), f"{i}°")
+                # Corriger l'affichage des angles pour correspondre à la réalité physique
+                displayed_angle = (i + 90) % 360
+                painter.drawText(int(text_x), int(text_y), f"{displayed_angle}°")
         
         # Dessiner l'indicateur (aiguille)
         painter.setPen(QPen(Qt.GlobalColor.red, 3))
