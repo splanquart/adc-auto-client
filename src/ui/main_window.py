@@ -9,12 +9,13 @@ import logging
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QLabel, QSlider, QGroupBox, QPushButton, QStatusBar,
-    QLineEdit, QMessageBox
+    QLineEdit, QMessageBox, QSplitter
 )
 from PyQt6.QtCore import Qt, pyqtSlot
 from PyQt6.QtGui import QFont
 
 from src.ui.widgets.servo_indicator import ServoIndicator
+from src.ui.widgets.horizon_indicator import HorizonIndicator
 from src.services.serial_service import SerialService
 from src.models.adc import AdcModel
 
@@ -102,12 +103,24 @@ class MainWindow(QMainWindow):
         indicators_layout.addWidget(self.servo2_indicator)
         indicators_group.setLayout(indicators_layout)
         
+        # Groupe pour l'indicateur d'horizon
+        horizon_group = QGroupBox("Indicateur d'Horizon")
+        horizon_layout = QHBoxLayout()
+        
+        # Indicateur d'horizon
+        self.horizon_indicator = HorizonIndicator("Niveau")
+        self.horizon_indicator.set_range(-45, 45)  # Plage actuelle du firmware
+        
+        horizon_layout.addWidget(self.horizon_indicator)
+        horizon_group.setLayout(horizon_layout)
+        
         # Configuration des contrôles
         controls_group.setLayout(controls_layout)
         
         # Ajout des groupes au layout principal
         main_layout.addWidget(controls_group)
         main_layout.addWidget(indicators_group)
+        main_layout.addWidget(horizon_group)
         
         # Boutons de contrôle
         buttons_layout = QHBoxLayout()
@@ -174,6 +187,9 @@ class MainWindow(QMainWindow):
             # Afficher directement les angles des servos (0-180°)
             self.servo1_indicator.set_angle(angle1)
             self.servo2_indicator.set_angle(angle2)
+            
+            # Mise à jour de l'indicateur d'horizon
+            self.horizon_indicator.set_angle(self.adc_model.adc.level)
     
     def process_response(self, response):
         """Traite une réponse du périphérique."""
