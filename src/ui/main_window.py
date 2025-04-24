@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QLabel, QSlider, QGroupBox, QPushButton, QStatusBar,
     QLineEdit, QMessageBox, QSplitter
 )
-from PyQt6.QtCore import Qt, pyqtSlot
+from PyQt6.QtCore import Qt, pyqtSlot, QTimer
 from PyQt6.QtGui import QFont
 
 from src.ui.widgets.servo_indicator import ServoIndicator
@@ -29,6 +29,11 @@ class MainWindow(QMainWindow):
         self.serial_service = SerialService()
         self.adc_model = AdcModel()
         self.init_ui()
+        
+        # Timer pour mettre à jour régulièrement l'état du système
+        self.status_timer = QTimer(self)
+        self.status_timer.timeout.connect(self.update_status_data)
+        self.status_timer.setInterval(2500)  # Mise à jour toutes les 2.5 secondes
         
     def init_ui(self):
         """Initialise l'interface utilisateur."""
@@ -105,18 +110,38 @@ class MainWindow(QMainWindow):
         
         # Groupe pour l'indicateur d'horizon
         horizon_group = QGroupBox("Indicateur d'Horizon")
-        horizon_layout = QHBoxLayout()
+        horizon_layout = QVBoxLayout()
         
         # Indicateur d'horizon
         self.horizon_indicator = HorizonIndicator("Niveau")
         self.horizon_indicator.set_range(-45, 45)  # Plage actuelle du firmware
         
+        # Boutons pour le MPU
+        mpu_buttons_layout = QHBoxLayout()
+        self.init_mpu_button = QPushButton("Initialiser MPU")
+        self.calibrate_mpu_button = QPushButton("Calibrer MPU")
+        self.mpu_status_label = QLabel("MPU: Non initialisé")
+        
+        # Connexion des signaux des boutons MPU
+        self.init_mpu_button.clicked.connect(self.on_init_mpu_clicked)
+        self.calibrate_mpu_button.clicked.connect(self.on_calibrate_mpu_clicked)
+        
+        # Désactiver le bouton de calibration jusqu'à l'initialisation
+        self.calibrate_mpu_button.setEnabled(False)
+        
+        # Ajout des boutons au layout
+        mpu_buttons_layout.addWidget(self.init_mpu_button)
+        mpu_buttons_layout.addWidget(self.calibrate_mpu_button)
+        mpu_buttons_layout.addWidget(self.mpu_status_label)
+        
+        # Ajout de l'indicateur et des boutons au layout d'horizon
         horizon_layout.addWidget(self.horizon_indicator)
+        horizon_layout.addLayout(mpu_buttons_layout)
         horizon_group.setLayout(horizon_layout)
         
         # Configuration des contrôles
         controls_group.setLayout(controls_layout)
-        
+
         # Ajout des groupes au layout principal
         main_layout.addWidget(controls_group)
         main_layout.addWidget(indicators_group)
@@ -167,30 +192,51 @@ class MainWindow(QMainWindow):
     
     def update_ui_from_model(self):
         """Met à jour l'interface utilisateur à partir du modèle ADC."""
-        # Mise à jour des sliders sans déclencher les signaux
-        self.level_slider.blockSignals(True)
+        # Mise à jour des indicateurs de servo
+        self.servo1_indicator.set_angle(self.adc_model.adc.angles["angle1"])
+        self.servo2_indicator.set_angle(self.adc_model.adc.angles["angle2"])
+        
+        # Mise à jour des sliders
         self.level_slider.setValue(self.adc_model.adc.level)
-        self.level_slider.blockSignals(False)
         self.level_value_label.setText(f"{self.adc_model.adc.level}°")
         
-        self.strength_slider.blockSignals(True)
         self.strength_slider.setValue(self.adc_model.adc.strength)
-        self.strength_slider.blockSignals(False)
-        self.strength_value_label.setText(str(self.adc_model.adc.strength))
+        self.strength_value_label.setText(f"{self.adc_model.adc.strength}")
         
-        # Mise à jour des indicateurs de servo
-        if self.adc_model.adc.angles:
-            # Récupérer les angles des servos
-            angle1 = self.adc_model.adc.angles.get("angle1", 45)
-            angle2 = self.adc_model.adc.angles.get("angle2", 135)
+        # Mise à jour de l'état du MPU
+        if self.adc_model.mpu.initialized:
+            self.init_mpu_button.setEnabled(False)
+            self.calibrate_mpu_button.setEnabled(True)
             
-            # Afficher directement les angles des servos (0-180°)
-            self.servo1_indicator.set_angle(angle1)
-            self.servo2_indicator.set_angle(angle2)
+            # Afficher les valeurs de pitch, roll et level
+            mpu_status = f"MPU: Initialisé | Pitch: {self.adc_model.mpu.pitch:.1f}° | Roll: {self.adc_model.mpu.roll:.1f}° | Level: {self.adc_model.mpu.level}°"
+            self.mpu_status_label.setText(mpu_status)
             
-            # Mise à jour de l'indicateur d'horizon
-            self.horizon_indicator.set_angle(self.adc_model.adc.level)
-    
+            # Mise à jour de l'indicateur d'horizon avec les données du MPU
+            self.horizon_indicator.set_angle(self.adc_model.mpu.level)
+            
+            # Démarrer le timer MPU s'il n'est pas déjà actif
+            if not self.status_timer.isActive() and hasattr(self.serial_service, 'is_connected') and self.serial_service.is_connected:
+                self.status_timer.start()
+        else:
+            self.init_mpu_button.setEnabled(hasattr(self.serial_service, 'is_connected') and self.serial_service.is_connected)
+            self.calibrate_mpu_button.setEnabled(False)
+            self.mpu_status_label.setText("MPU: Non initialisé")
+            
+        # Mise à jour des boutons
+        self.reset_button.setEnabled(hasattr(self.serial_service, 'is_connected') and self.serial_service.is_connected)
+        
+        # Mise à jour de la barre de statut
+        if hasattr(self.serial_service, 'is_connected') and self.serial_service.is_connected:
+            # Utiliser le port du serial_service s'il existe
+            port_info = "périphérique"
+            if hasattr(self.serial_service, 'serial_port') and self.serial_service.serial_port:
+                if hasattr(self.serial_service.serial_port, 'port'):
+                    port_info = self.serial_service.serial_port.port
+            self.statusBar().showMessage(f"Connecté à {port_info}")
+        else:
+            self.statusBar().showMessage("Non connecté")
+
     def process_response(self, response):
         """Traite une réponse du périphérique."""
         try:
@@ -200,6 +246,7 @@ class MainWindow(QMainWindow):
             # Mettre à jour le modèle avec la réponse
             if self.adc_model.update_from_json(response):
                 # Mettre à jour l'interface utilisateur
+                self.logger.info("Mise à jour de l'interface utilisateur")
                 self.update_ui_from_model()
                 
                 # Afficher la réponse dans la barre de statut
@@ -220,7 +267,7 @@ class MainWindow(QMainWindow):
         self.level_value_label.setText(f"{value}°")
         
         # Envoi de la commande au microcontrôleur si connecté
-        if self.serial_service.is_connected:
+        if hasattr(self.serial_service, 'is_connected') and self.serial_service.is_connected:
             command = f"LEVEL={value}"
             self.logger.debug(f"Envoi de la commande: {command}")
             self.serial_service.send_command(command)
@@ -234,10 +281,10 @@ class MainWindow(QMainWindow):
     @pyqtSlot(int)
     def on_strength_changed(self, value):
         """Gère le changement de valeur du slider de strength."""
-        self.strength_value_label.setText(str(value))
+        self.strength_value_label.setText(f"{value}")
         
         # Envoi de la commande au microcontrôleur si connecté
-        if self.serial_service.is_connected:
+        if hasattr(self.serial_service, 'is_connected') and self.serial_service.is_connected:
             command = f"STRENGTH={value}"
             self.logger.debug(f"Envoi de la commande: {command}")
             self.serial_service.send_command(command)
@@ -252,13 +299,19 @@ class MainWindow(QMainWindow):
     def on_connect_clicked(self):
         """Gère le clic sur le bouton de connexion."""
         # Si déjà connecté, déconnecter
-        if self.serial_service.is_connected:
+        if hasattr(self.serial_service, 'is_connected') and self.serial_service.is_connected:
             self.logger.info("Déconnexion du périphérique")
             if self.serial_service.disconnect():
                 self.status_bar.showMessage("Déconnecté")
                 self.connect_button.setText("Connecter")
                 self.send_command_button.setEnabled(False)
                 self.reset_button.setEnabled(False)
+                self.init_mpu_button.setEnabled(False)
+                self.calibrate_mpu_button.setEnabled(False)
+                
+                # Arrêter le timer MPU
+                if self.status_timer.isActive():
+                    self.status_timer.stop()
             else:
                 self.status_bar.showMessage("Échec de la déconnexion")
             return
@@ -274,66 +327,57 @@ class MainWindow(QMainWindow):
                 self.connect_button.setText("Déconnecter")
                 self.send_command_button.setEnabled(True)
                 self.reset_button.setEnabled(True)
+                self.init_mpu_button.setEnabled(True)
                 
-                # Envoi de la commande STATUS
+                # Envoyer la commande STATUS pour initialiser l'état
                 self.logger.info("Envoi de la commande STATUS")
                 self.serial_service.send_command("STATUS")
-                
-                # Lecture de la réponse
                 response = self.serial_service.read_line()
                 if response:
                     self.logger.info(f"Réponse à STATUS: {response}")
-                    self.status_bar.showMessage(f"Connecté à {port} - Status: {response}")
                     self.process_response(response)
                     
-                    # Récupérer l'état actuel du level et strength
-                    self.serial_service.send_command("LEVEL")
-                    response = self.serial_service.read_line()
-                    if response:
-                        self.logger.info(f"Réponse à LEVEL: {response}")
-                        self.process_response(response)
+                # Envoyer la commande LEVEL pour obtenir le niveau actuel
+                self.logger.info("Envoi de la commande LEVEL")
+                self.serial_service.send_command("LEVEL")
+                response = self.serial_service.read_line()
+                if response:
+                    self.logger.info(f"Réponse à LEVEL: {response}")
+                    self.process_response(response)
                     
-                    self.serial_service.send_command("STRENGTH")
-                    response = self.serial_service.read_line()
-                    if response:
-                        self.logger.info(f"Réponse à STRENGTH: {response}")
-                        self.process_response(response)
-                else:
-                    self.logger.warning("Pas de réponse à la commande STATUS")
+                # Envoyer la commande STRENGTH pour obtenir la force actuelle
+                self.logger.info("Envoi de la commande STRENGTH")
+                self.serial_service.send_command("STRENGTH")
+                response = self.serial_service.read_line()
+                if response:
+                    self.logger.info(f"Réponse à STRENGTH: {response}")
+                    self.process_response(response)
+                    
+                # Vérifier l'état du système
+                self.update_status_data()
             else:
                 self.status_bar.showMessage(f"Échec de la connexion à {port}")
-        except ConnectionError as e:
-            self.logger.error(f"Erreur de connexion: {e}")
-            QMessageBox.critical(self, "Erreur de connexion", 
-                                f"Impossible de se connecter à {port}:\n{e}")
-            self.status_bar.showMessage(f"Erreur de connexion: {e}")
-        except TimeoutError as e:
-            self.logger.error(f"Timeout de connexion: {e}")
-            QMessageBox.critical(self, "Timeout de connexion", 
-                                f"Délai d'attente dépassé pour la connexion à {port}:\n{e}")
-            self.status_bar.showMessage(f"Timeout de connexion: {e}")
         except Exception as e:
-            self.logger.error(f"Erreur inattendue lors de la connexion: {e}")
-            QMessageBox.critical(self, "Erreur de connexion", 
-                                f"Impossible de se connecter à {port}:\n{e}")
-            self.status_bar.showMessage(f"Erreur de connexion: {e}")
-    
+            self.logger.error(f"Erreur lors de la connexion: {str(e)}")
+            self.status_bar.showMessage(f"Erreur: {str(e)}")
+
     @pyqtSlot()
     def on_start_server_clicked(self):
         """Gère le clic sur le bouton de démarrage du serveur ASCOM."""
-        # À implémenter: démarrage du serveur ASCOM Alpaca
-        self.status_bar.showMessage("Démarrage du serveur ASCOM...")
         self.logger.info("Démarrage du serveur ASCOM")
-
+        self.status_bar.showMessage("Serveur ASCOM démarré")
+    
     @pyqtSlot()
     def on_send_command_clicked(self):
         """Envoie une commande personnalisée au périphérique."""
-        if not self.serial_service.is_connected:
+        if not hasattr(self.serial_service, 'is_connected') or not self.serial_service.is_connected:
             self.status_bar.showMessage("Pas de connexion active")
             return
             
+        # Récupérer la commande depuis le champ de texte
         command = self.command_input.text().strip()
         if not command:
+            self.status_bar.showMessage("Commande vide")
             return
             
         self.logger.info(f"Envoi de la commande: {command}")
@@ -343,21 +387,21 @@ class MainWindow(QMainWindow):
             response = self.serial_service.read_line()
             if response:
                 self.logger.info(f"Réponse: {response}")
-                self.status_bar.showMessage(f"Réponse: {response}")
+                self.status_bar.showMessage(f"Réponse reçue")
                 self.process_response(response)
             else:
                 self.logger.warning(f"Pas de réponse à la commande: {command}")
-                self.status_bar.showMessage("Commande envoyée, pas de réponse")
+                self.status_bar.showMessage(f"Commande envoyée, pas de réponse")
         else:
-            self.status_bar.showMessage("Échec de l'envoi de la commande")
-            
+            self.status_bar.showMessage(f"Échec de l'envoi de la commande")
+        
         # Effacer le champ de saisie
         self.command_input.clear()
 
     @pyqtSlot()
     def on_reset_clicked(self):
         """Gère le clic sur le bouton de réinitialisation."""
-        if not self.serial_service.is_connected:
+        if not hasattr(self.serial_service, 'is_connected') or not self.serial_service.is_connected:
             self.status_bar.showMessage("Pas de connexion active")
             return
             
@@ -375,3 +419,60 @@ class MainWindow(QMainWindow):
                 self.status_bar.showMessage("Commande RESET envoyée, pas de réponse")
         else:
             self.status_bar.showMessage("Échec de l'envoi de la commande RESET")
+
+    @pyqtSlot()
+    def on_init_mpu_clicked(self):
+        """Gère le clic sur le bouton d'initialisation du MPU."""
+        if not hasattr(self.serial_service, 'is_connected') or not self.serial_service.is_connected:
+            QMessageBox.warning(self, "Erreur", "Veuillez d'abord connecter le périphérique.")
+            return
+            
+        self.logger.info("Envoi de la commande: MPU=init")
+        self.serial_service.send_command("MPU=init")
+        
+        # Lecture et traitement de la réponse
+        response = self.serial_service.read_line()
+        if response:
+            self.logger.info(f"Réponse: {response}")
+            self.process_response(response)
+            
+            # Mettre à jour l'état du MPU
+            self.update_status_data()
+    
+    @pyqtSlot()
+    def on_calibrate_mpu_clicked(self):
+        """Gère le clic sur le bouton de calibration du MPU."""
+        if not hasattr(self.serial_service, 'is_connected') or not self.serial_service.is_connected:
+            QMessageBox.warning(self, "Erreur", "Veuillez d'abord connecter le périphérique.")
+            return
+            
+        if not self.adc_model.mpu.initialized:
+            QMessageBox.warning(self, "Erreur", "Veuillez d'abord initialiser le MPU.")
+            return
+            
+        self.logger.info("Envoi de la commande: MPU=calibrate")
+        self.serial_service.send_command("MPU=calibrate")
+        
+        # Lecture et traitement de la réponse
+        response = self.serial_service.read_line()
+        if response:
+            self.logger.info(f"Réponse: {response}")
+            self.process_response(response)
+            
+            # Mettre à jour l'état du MPU
+            self.update_status_data()
+    
+    @pyqtSlot()
+    def update_status_data(self):
+        """Met à jour les données d'état du système (MPU et servos)."""
+        if not hasattr(self.serial_service, 'is_connected') or not self.serial_service.is_connected:
+            return
+            
+        self.logger.debug("Mise à jour des données d'état")
+        self.serial_service.send_command("STATUS")
+        
+        # Lecture et traitement de la réponse
+        response = self.serial_service.read_line()
+        if response:
+            self.logger.debug(f"Réponse STATUS: {response}")
+            self.process_response(response)

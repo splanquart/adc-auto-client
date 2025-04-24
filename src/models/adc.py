@@ -20,6 +20,16 @@ class ServoState:
     target_angle: float = 0
     intermediate_angle: Optional[float] = None
     initializing: bool = False
+    
+
+@dataclass
+class MpuState:
+    """État du capteur MPU-6050."""
+    initialized: bool = False
+    calibrated: bool = False
+    pitch: float = 0.0
+    roll: float = 0.0
+    level: int = 0
 
 
 @dataclass
@@ -45,6 +55,7 @@ class AdcModel:
         self.servo1 = ServoState()
         self.servo2 = ServoState()
         self.adc = AdcState()
+        self.mpu = MpuState()
     
     def update_from_json(self, json_data: str) -> bool:
         """
@@ -65,7 +76,7 @@ class AdcModel:
                 
             # Mise à jour selon le type de commande
             command = data.get("command", "")
-            
+            self.logger.info(f"Mise à jour du modèle avec la commande: {command}")
             if command == "status":
                 self._update_from_status(data)
             elif command == "level":
@@ -74,6 +85,8 @@ class AdcModel:
                 self._update_from_strength(data)
             elif command == "reset":
                 self._update_from_reset(data)
+            elif command == "mpu":
+                self._update_from_mpu(data)
             else:
                 self.logger.warning("Commande inconnue dans la réponse JSON: %s", command)
                 return False
@@ -97,28 +110,50 @@ class AdcModel:
         """Met à jour le modèle à partir d'une réponse à la commande STATUS."""
         self.ready = bool(data.get("ready", 0))
         
-        # Mise à jour du servo 1
-        if "servo1" in data:
-            servo1_data = data["servo1"]
-            self.servo1.attached = bool(servo1_data.get("attached", False))
-            self.servo1.pin = int(servo1_data.get("pin", 0))
-            self.servo1.current_angle = float(servo1_data.get("current_angle", 0))
-            self.servo1.target_angle = float(servo1_data.get("target_angle", 0))
-            if "intermediate_angle" in servo1_data:
-                self.servo1.intermediate_angle = float(servo1_data["intermediate_angle"])
-            self.servo1.initializing = bool(servo1_data.get("initializing", False))
+        # Mise à jour des données ADC
+        if "adc" in data:
+            adc_data = data["adc"]
+            self.adc.level = int(adc_data.get("level", 0))
+            self.adc.strength = int(adc_data.get("strength", 50))
+            
+            if "angles" in adc_data:
+                angles_data = adc_data["angles"]
+                self.adc.angles = {
+                    "angle1": float(angles_data.get("angle1", 45)),
+                    "angle2": float(angles_data.get("angle2", 135))
+                }
+                
+                # Mettre à jour les angles des servos à partir des angles de l'ADC
+                self.servo1.current_angle = self.adc.angles["angle1"]
+                self.servo1.target_angle = self.adc.angles["angle1"]
+                self.servo2.current_angle = self.adc.angles["angle2"]
+                self.servo2.target_angle = self.adc.angles["angle2"]
+        # Mise à jour des angles des servos si disponibles
+        if "angles" in data:
+            angles_data = data["angles"]
+            self.adc.angles = {
+                "angle1": float(angles_data.get("angle1", 45)),
+                "angle2": float(angles_data.get("angle2", 135))
+            }
+            
+            # Mettre à jour les angles des servos à partir des angles de l'ADC
+            self.servo1.current_angle = self.adc.angles["angle1"]
+            self.servo1.target_angle = self.adc.angles["angle1"]
+            self.servo2.current_angle = self.adc.angles["angle2"]
+            self.servo2.target_angle = self.adc.angles["angle2"]
         
-        # Mise à jour du servo 2
-        if "servo2" in data:
-            servo2_data = data["servo2"]
-            self.servo2.attached = bool(servo2_data.get("attached", False))
-            self.servo2.pin = int(servo2_data.get("pin", 0))
-            self.servo2.current_angle = float(servo2_data.get("current_angle", 0))
-            self.servo2.target_angle = float(servo2_data.get("target_angle", 0))
-            if "intermediate_angle" in servo2_data:
-                self.servo2.intermediate_angle = float(servo2_data["intermediate_angle"])
-            self.servo2.initializing = bool(servo2_data.get("initializing", False))
-    
+        # Mise à jour des données MPU (nouveau format)
+        if "mpu6050" in data:
+            mpu_data = data["mpu6050"]
+            self.mpu.initialized = bool(mpu_data.get("initialized", False))
+            
+            if "pitch" in mpu_data:
+                self.mpu.pitch = float(mpu_data.get("pitch", 0.0))
+            if "roll" in mpu_data:
+                self.mpu.roll = float(mpu_data.get("roll", 0.0))
+            if "level" in mpu_data:
+                self.mpu.level = int(mpu_data.get("level", 0))
+
     def _update_from_level(self, data: Dict[str, Any]) -> None:
         """Met à jour le modèle à partir d'une réponse à la commande LEVEL."""
         if "level" in data:
@@ -174,7 +209,7 @@ class AdcModel:
                     "angle2": float(angles_data.get("angle2", 135))
                 }
         
-        # Mise à jour directe des angles si disponibles
+        # Mise à jour directe des angles si disponibles sinon on se content de adc.angles
         if "angles" in data:
             angles_data = data["angles"]
             if not self.adc.angles:
@@ -183,3 +218,32 @@ class AdcModel:
                 "angle1": float(angles_data.get("angle1", 45)),
                 "angle2": float(angles_data.get("angle2", 135))
             })
+            
+    def _update_from_mpu(self, data: Dict[str, Any]) -> None:
+        """Met à jour le modèle à partir d'une réponse à la commande MPU."""
+        # Vérifier si les données MPU sont présentes
+        if "mpu6050" not in data:
+            self.logger.warning("Données MPU-6050 manquantes dans la réponse")
+            self.logger.info("Réponse: %s", data)
+            return
+            
+        mpu_data = data["mpu6050"]
+        
+        # Mise à jour de l'état du MPU
+        self.mpu.initialized = bool(mpu_data.get("initialized", False))
+        
+        # Si une action spécifique a été effectuée
+        action = mpu_data.get("action", "")
+        if action == "calibrate":
+            self.mpu.calibrated = True
+            self.logger.info("MPU-6050 calibré avec succès")
+        elif action == "init":
+            self.logger.info("MPU-6050 initialisé avec succès")
+        
+        # Mise à jour des valeurs d'angle si disponibles
+        if "pitch" in mpu_data:
+            self.mpu.pitch = float(mpu_data.get("pitch", 0.0))
+        if "roll" in mpu_data:
+            self.mpu.roll = float(mpu_data.get("roll", 0.0))
+        if "level" in mpu_data:
+            self.mpu.level = int(mpu_data.get("level", 0))
