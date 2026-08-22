@@ -44,6 +44,36 @@ pip install -r requirements.txt
 python src/main.py
 ```
 
+## Outil CLI de test (`adc_cli.py`)
+
+Client série minimal pour valider la connexion, le niveau et la force sans l'interface graphique.
+Dépendance : `pyserial` uniquement (déjà dans `requirements.txt`).
+
+```bash
+python3 adc_cli.py status              # état complet (ready, level, strength, angles)
+python3 adc_cli.py level 30            # régler le niveau (-45..45)
+python3 adc_cli.py strength 75         # régler la force (0..100)
+python3 adc_cli.py reset               # retour à level=0, strength=0
+python3 adc_cli.py sweep               # rampe de validation matérielle
+python3 adc_cli.py                     # mode interactif (REPL)
+python3 adc_cli.py --port /dev/ttyACM0 status   # forcer le port
+```
+
+- Le port série est auto-détecté (USB série).
+- **Baudrate : 115200** (vitesse du firmware, `Serial.begin(115200)`).
+- Les messages texte brut du firmware (boot, HELP) et les logs JSON sont ignorés
+  ou affichés, seules les réponses `data`/`error` sont traitées.
+
+## Simulateur de firmware (`tools/fw_sim.py`)
+
+Émule les réponses série du microcontrôleur (pty) pour développer/tester le client
+**sans le C3**. Standard library uniquement, aucune dépendance.
+
+```bash
+python3 tools/fw_sim.py          # crée un pseudo-port /dev/pts/N (affiché en sortie)
+python3 adc_cli.py --port /dev/pts/N sweep
+```
+
 ## Structure du projet
 
 ```

@@ -43,13 +43,14 @@ class SerialService:
         self.logger.info(f"Ports série disponibles: {len(ports)}")
         return ports
     
-    def connect(self, port: str, baudrate: int = 9600, timeout: float = 1.0) -> bool:
+    def connect(self, port: str, baudrate: int = 115200, timeout: float = 1.0) -> bool:
         """
         Établit une connexion avec un port série.
         
         Args:
             port (str): Nom du port série
-            baudrate (int, optional): Vitesse de communication. Par défaut 9600.
+            baudrate (int, optional): Vitesse de communication. Par défaut 115200
+                (vitesse du firmware ADC-Auto : Serial.begin(115200)).
             timeout (float, optional): Délai d'attente en secondes. Par défaut 1.0.
             
         Returns:
