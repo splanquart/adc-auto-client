@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Simulateur du firmware ADC-Auto : émule les réponses série exactes du C3.
+# -*- coding: utf-8 -*-
+"""Test du client contre le firmware adc-auto commit 9f9b496 (MPU amélioré).
 
-Créé un pty (pseudo-terminal) et y répond aux commandes comme le firmware :
-    LEVEL=n / STRENGTH=n / STATUS / RESET + messages de boot texte brut
-    + logs JSON occasionnels.
+Vérifie la compatibilité du client adc_cli.py avec les réponses du firmware :
+- STATUS (ready, adc, angles, mpu6050 optionnel)
+- LEVEL/STRENGTH lecture + écriture
+- MPU, MPU=raw (logs), MPU=init/calibrate/update
+- custom_levels dans la réponse MPU
 """
+import json
 import os
 import pty
+import sys
 import time
-import json
 import threading
 import select
 import termios
@@ -21,33 +25,112 @@ def servo_angles(level, strength):
     a2 = max(0, min(180, base + spread // 2))
     return a1, a2
 
-def adc_json(level, strength):
-    a1, a2 = servo_angles(level, strength)
-    return {
-        "source": "system", "type": "data", "command": "level",
-        "level": level,
-        "adc": {"level": level, "strength": strength,
-                "angles": {"angle1": a1, "angle2": a2}},
-    }
-
 def main():
     master_fd, slave_fd = pty.openpty()
-    # Mode raw : pas d'écho ni de canonique (comme un vrai port USB série)
     tty.setraw(slave_fd)
-    print(f"SLAVE_PORT={os.ttyname(slave_fd)}")
-    state = {"level": 0, "strength": 0}
+    port = os.ttyname(slave_fd)
+    print(f"SLAVE_PORT={port}")
+    state = {"level": 0, "strength": 0, "mpu_init": False, "pitch": 7.15, "roll": 2.86}
 
     def send(line):
         os.write(master_fd, (line + "\n").encode())
 
-    # Boot messages texte brut (comme le vrai firmware)
     time.sleep(0.2)
     send("=== ADC Control System ===")
-    send("Starting initialization sequence...")
-    send("System is still initializing...")
-    time.sleep(0.3)
     send("=== System Ready! ===")
-    send("You can now send commands.")
+
+    def mpu_json():
+        d = {"source": "system", "type": "data", "command": "mpu",
+             "mpu6050": {"initialized": state["mpu_init"]}}
+        if state["mpu_init"]:
+            d["mpu6050"].update({
+                "pitch": state["pitch"], "roll": state["roll"], "level": 7,
+                "custom_levels": {"x_only": 10.5, "y_only": 2.3, "z_only": 0.0,
+                                  "xy": 11.0, "xz": 10.5, "yz": 2.3}})
+        return d
+
+    def handle(cmd):
+        if cmd.startswith("LEVEL="):
+            v = int(cmd.split("=")[1])
+            if -45 <= v <= 45:
+                state["level"] = v
+                d = {"source": "system", "type": "data", "command": "level",
+                     "level": v,
+                     "adc": {"level": v, "strength": state["strength"],
+                             "angles": dict(zip(("angle1", "angle2"),
+                                                servo_angles(v, state["strength"])))}}
+                send(json.dumps(d))
+        elif cmd == "LEVEL":
+            d = {"source": "system", "type": "data", "command": "level",
+                 "level": state["level"],
+                 "adc": {"level": state["level"], "strength": state["strength"],
+                         "angles": dict(zip(("angle1", "angle2"),
+                                            servo_angles(state["level"], state["strength"])))}}
+            send(json.dumps(d))
+        elif cmd.startswith("STRENGTH="):
+            v = int(cmd.split("=")[1])
+            if 0 <= v <= 100:
+                state["strength"] = v
+                d = {"source": "system", "type": "data", "command": "strength",
+                     "strength": v,
+                     "adc": {"level": state["level"], "strength": v,
+                             "angles": dict(zip(("angle1", "angle2"),
+                                                servo_angles(state["level"], v)))}}
+                send(json.dumps(d))
+        elif cmd == "STRENGTH":
+            d = {"source": "system", "type": "data", "command": "strength",
+                 "strength": state["strength"],
+                 "adc": {"level": state["level"], "strength": state["strength"],
+                         "angles": dict(zip(("angle1", "angle2"),
+                                            servo_angles(state["level"], state["strength"])))}}
+            send(json.dumps(d))
+        elif cmd == "STATUS":
+            a1, a2 = servo_angles(state["level"], state["strength"])
+            d = {"source": "system", "type": "data", "command": "status",
+                 "ready": True,
+                 "adc": {"level": state["level"], "strength": state["strength"],
+                         "angles": {"angle1": a1, "angle2": a2}},
+                 "angles": {"angle1": a1, "angle2": a2}}
+            if state["mpu_init"]:
+                d["mpu6050"] = {"initialized": True, "pitch": state["pitch"],
+                                "roll": state["roll"], "level": 7}
+            send(json.dumps(d))
+        elif cmd == "MPU":
+            send(json.dumps(mpu_json()))
+        elif cmd == "MPU=INIT":
+            state["mpu_init"] = True
+            send(json.dumps({"source": "system", "type": "log", "level": "info",
+                             "message": "MPU-6050 initialized successfully"}))
+            d = mpu_json()
+            d["mpu6050"]["action"] = "initialize"
+            d["status"] = "ok"
+            send(json.dumps(d))
+        elif cmd == "MPU=RAW":
+            if state["mpu_init"]:
+                send(json.dumps({"source": "system", "type": "log", "level": "info",
+                                 "message": "MPU-6050 Raw Data:\nAccel X: 100 (0.08 g)\nPitch: 7.15°"}))
+                d = mpu_json()
+                d["mpu6050"]["action"] = "print_raw_data"
+                send(json.dumps(d))
+        elif cmd == "MPU=UPDATE":
+            if state["mpu_init"]:
+                state["level"] = 7  # le firmware met à jour le niveau ADC
+                d = mpu_json()
+                d["mpu6050"]["action"] = "update"
+                d["status"] = "ok"
+                send(json.dumps(d))
+        elif cmd == "RESET":
+            state["level"] = 0
+            state["strength"] = 0
+            a1, a2 = servo_angles(0, 0)
+            send(json.dumps({"source": "system", "type": "data", "command": "reset",
+                             "status": "ok",
+                             "adc": {"level": 0, "strength": 0,
+                                     "angles": {"angle1": a1, "angle2": a2}},
+                             "angles": {"angle1": a1, "angle2": a2}}))
+        else:
+            send(json.dumps({"source": "system", "type": "error", "code": "GENERIC_ERROR",
+                             "command": cmd, "reason": "Commande inconnue"}))
 
     def reader():
         buf = b""
@@ -64,83 +147,10 @@ def main():
             buf += chunk
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
-                cmd = line.decode().strip().upper()
-                handle(cmd)
+                handle(line.decode().strip().upper())
 
-    def handle(cmd):
-        if cmd.startswith("LEVEL="):
-            v = int(cmd.split("=")[1])
-            if -45 <= v <= 45:
-                state["level"] = v
-            else:
-                send(json.dumps({"source": "system", "type": "error",
-                                 "code": "INVALID_LEVEL", "command": cmd,
-                                 "reason": "Valeur de niveau invalide (-45 à 45)",
-                                 "help": "Tapez HELP"}))
-                return
-            d = adc_json(state["level"], state["strength"])
-            send(json.dumps(d))
-        elif cmd == "LEVEL":
-            # Lecture (sans =) : répond la valeur courante, comme le firmware
-            d = adc_json(state["level"], state["strength"])
-            send(json.dumps(d))
-        elif cmd.startswith("STRENGTH="):
-            v = int(cmd.split("=")[1])
-            if 0 <= v <= 100:
-                state["strength"] = v
-            else:
-                send(json.dumps({"source": "system", "type": "error",
-                                 "code": "INVALID_STRENGTH", "command": cmd,
-                                 "reason": "Valeur de force invalide (0 à 100)",
-                                 "help": "Tapez HELP"}))
-                return
-            d = adc_json(state["level"], state["strength"])
-            d["command"] = "strength"
-            d["strength"] = v
-            send(json.dumps(d))
-        elif cmd == "STRENGTH":
-            # Lecture (sans =) : répond la valeur courante, comme le firmware
-            d = adc_json(state["level"], state["strength"])
-            d["command"] = "strength"
-            d["strength"] = state["strength"]
-            send(json.dumps(d))
-        elif cmd == "STATUS":
-            a1, a2 = servo_angles(state["level"], state["strength"])
-            send(json.dumps({
-                "source": "system", "type": "data", "command": "status",
-                "ready": True,
-                "adc": {"level": state["level"], "strength": state["strength"],
-                        "angles": {"angle1": a1, "angle2": a2}},
-                "angles": {"angle1": a1, "angle2": a2},
-            }))
-        elif cmd == "RESET":
-            state["level"] = 0
-            state["strength"] = 0
-            a1, a2 = servo_angles(0, 0)
-            send(json.dumps({
-                "source": "system", "type": "data", "command": "reset",
-                "status": "ok",
-                "adc": {"level": 0, "strength": 0,
-                        "angles": {"angle1": a1, "angle2": a2}},
-                "angles": {"angle1": a1, "angle2": a2},
-            }))
-        elif cmd == "LOG_LEVEL=DEBUG":
-            send(json.dumps({"source": "system", "type": "log",
-                             "level": "debug", "message": "debug mode on"}))
-        elif cmd in ("HELP", "H"):
-            send("=== ADC Control Commands ===")
-            send("  LEVEL=VALUE : Set level (-45 to 45)")
-        else:
-            send(json.dumps({"source": "system", "type": "error",
-                             "code": "GENERIC_ERROR", "command": cmd,
-                             "reason": "Commande inconnue", "help": "Tapez HELP"}))
-
-    t = threading.Thread(target=reader, daemon=True)
-    t.start()
-    try:
-        time.sleep(600)
-    except KeyboardInterrupt:
-        pass
+    threading.Thread(target=reader, daemon=True).start()
+    time.sleep(600)
 
 if __name__ == "__main__":
     main()
