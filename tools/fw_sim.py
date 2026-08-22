@@ -80,6 +80,10 @@ def main():
                 return
             d = adc_json(state["level"], state["strength"])
             send(json.dumps(d))
+        elif cmd == "LEVEL":
+            # Lecture (sans =) : répond la valeur courante, comme le firmware
+            d = adc_json(state["level"], state["strength"])
+            send(json.dumps(d))
         elif cmd.startswith("STRENGTH="):
             v = int(cmd.split("=")[1])
             if 0 <= v <= 100:
@@ -93,6 +97,12 @@ def main():
             d = adc_json(state["level"], state["strength"])
             d["command"] = "strength"
             d["strength"] = v
+            send(json.dumps(d))
+        elif cmd == "STRENGTH":
+            # Lecture (sans =) : répond la valeur courante, comme le firmware
+            d = adc_json(state["level"], state["strength"])
+            d["command"] = "strength"
+            d["strength"] = state["strength"]
             send(json.dumps(d))
         elif cmd == "STATUS":
             a1, a2 = servo_angles(state["level"], state["strength"])

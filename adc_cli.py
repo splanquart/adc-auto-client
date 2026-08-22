@@ -39,19 +39,54 @@ ANGLE_FIELDS = ("angle1", "angle2")
 
 
 def find_serial_port():
-    """Retourne le port série USB le plus probable (1er candidat), ou None."""
-    keywords = ("usb", "uart", "cp210", "ch340", "serial", "jtag", "acm")
-    candidates = []
-    for p in serial.tools.list_ports.comports():
-        desc = (p.description or "").lower()
-        dev = p.device.lower()
-        if any(k in desc for k in keywords) or any(k in dev for k in keywords):
-            candidates.append(p)
+    """Détecte le device ADC-Auto par handshake série.
+
+    Envoie STATUS sur chaque port candidat ; un port est retenu s'il répond
+    en JSON avec source=="system" et type=="data" (protocole du firmware).
+    Les autres devices (monture, focuser, caméra...) ne parlent pas ce
+    protocole et sont écartés. Retourne le port trouvé, ou None.
+    (Même logique que src/services/device_scanner.py — dupliquée ici pour
+    garder ce script autonome.)
+    """
+    candidates = [p for p in serial.tools.list_ports.comports()
+                  if "ttyS" not in p.device.lower()]
     if not candidates:
-        # Fallback : tous les ports (Linux /dev/ttyS* exclus)
-        candidates = [p for p in serial.tools.list_ports.comports()
-                      if "ttyS" not in p.device]
-    return candidates[0] if candidates else None
+        return None
+    for p in candidates:
+        try:
+            ser = serial.Serial(p.device, 115200, timeout=0.3)
+        except Exception:
+            continue
+        try:
+            # Ne pas toucher DTR/RTS (reset possible sur certains adaptateurs)
+            try:
+                ser.dtr = False
+                ser.rts = False
+            except Exception:
+                pass
+            ser.reset_input_buffer()
+            time.sleep(0.15)
+            ser.write(b"STATUS\n")
+            deadline = time.time() + 1.5
+            while time.time() < deadline:
+                line = ser.readline()
+                if not line:
+                    continue
+                text = line.decode("utf-8", errors="replace").strip()
+                if not text.startswith("{"):
+                    continue
+                try:
+                    data = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                if data.get("source") == "system" and data.get("type") == "data":
+                    return p.device
+        finally:
+            try:
+                ser.close()
+            except Exception:
+                pass
+    return None
 
 
 def display_adc(data):
@@ -261,10 +296,11 @@ def main():
     if not port:
         found = find_serial_port()
         if not found:
-            print("Aucun port série USB trouvé. Utilisez --port pour le forcer.")
+            print("Aucun device ADC-Auto détecté sur les ports série.")
+            print("Vérifiez le câble USB, puis réessayez (ou forcez avec --port).")
             return 2
-        port = found.device
-        print(f"Port auto-détecté: {port} ({found.description})")
+        port = found
+        print(f"ADC-Auto détecté sur {port}")
 
     client = AdcClient(port, args.baud)
     try:

@@ -9,15 +9,30 @@ import logging
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QLabel, QSlider, QGroupBox, QPushButton, QStatusBar,
-    QLineEdit, QMessageBox, QSplitter
+    QLineEdit, QMessageBox, QSplitter, QComboBox
 )
-from PyQt6.QtCore import Qt, pyqtSlot, QTimer
+from PyQt6.QtCore import Qt, pyqtSlot, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
 
 from src.ui.widgets.servo_indicator import ServoIndicator
 from src.ui.widgets.horizon_indicator import HorizonIndicator
 from src.services.serial_service import SerialService
 from src.models.adc import AdcModel
+from src.services.device_scanner import scan_adc_devices, load_last_port, save_last_port
+
+
+class PortScannerThread(QThread):
+    """Scanne les ports série à la recherche du device ADC-Auto (hors UI thread)."""
+
+    scan_finished = pyqtSignal(list)
+
+    def run(self):
+        try:
+            devices = scan_adc_devices()
+        except Exception as e:
+            logging.getLogger(__name__).error("Erreur pendant le scan des ports: %s", e)
+            devices = []
+        self.scan_finished.emit(devices)
 
 
 class MainWindow(QMainWindow):
@@ -28,12 +43,17 @@ class MainWindow(QMainWindow):
         self.logger = logging.getLogger(__name__)
         self.serial_service = SerialService()
         self.adc_model = AdcModel()
+        self.devices = []               # devices ADC-Auto détectés par le scan
+        self.scan_thread = None         # thread de scan en cours
         self.init_ui()
         
         # Timer pour mettre à jour régulièrement l'état du système
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self.update_status_data)
         self.status_timer.setInterval(2500)  # Mise à jour toutes les 2.5 secondes
+
+        # Scan automatique des ports au démarrage
+        QTimer.singleShot(200, self.start_port_scan)
         
     def init_ui(self):
         """Initialise l'interface utilisateur."""
@@ -147,18 +167,29 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(indicators_group)
         main_layout.addWidget(horizon_group)
         
+        # Zone connexion : sélecteur de port (scan auto) + actualiser + connecter
+        connection_layout = QHBoxLayout()
+        connection_label = QLabel("Port ADC:")
+        self.port_combo = QComboBox()
+        self.port_combo.setMinimumWidth(240)
+        self.refresh_ports_button = QPushButton("Actualiser")
+        self.connect_button = QPushButton("Connecter")
+        connection_layout.addWidget(connection_label)
+        connection_layout.addWidget(self.port_combo, 1)
+        connection_layout.addWidget(self.refresh_ports_button)
+        connection_layout.addWidget(self.connect_button)
+        main_layout.addLayout(connection_layout)
+
         # Boutons de contrôle
         buttons_layout = QHBoxLayout()
-        
-        self.connect_button = QPushButton("Connecter")
+
         self.reset_button = QPushButton("Réinitialiser")
         self.reset_button.setEnabled(False)  # Désactivé jusqu'à la connexion
         self.start_server_button = QPushButton("Démarrer Serveur ASCOM")
-        
-        buttons_layout.addWidget(self.connect_button)
+
         buttons_layout.addWidget(self.reset_button)
         buttons_layout.addWidget(self.start_server_button)
-        
+
         main_layout.addLayout(buttons_layout)
         
         # Zone de commande personnalisée
@@ -184,6 +215,7 @@ class MainWindow(QMainWindow):
         self.level_slider.valueChanged.connect(self.on_level_changed)
         self.strength_slider.valueChanged.connect(self.on_strength_changed)
         self.connect_button.clicked.connect(self.on_connect_clicked)
+        self.refresh_ports_button.clicked.connect(self.start_port_scan)
         self.reset_button.clicked.connect(self.on_reset_clicked)
         self.start_server_button.clicked.connect(self.on_start_server_clicked)
         self.send_command_button.clicked.connect(self.on_send_command_clicked)
@@ -296,6 +328,40 @@ class MainWindow(QMainWindow):
                 self.process_response(response)
     
     @pyqtSlot()
+    def start_port_scan(self):
+        """Lance le scan des ports série en arrière-plan (hors UI thread)."""
+        if self.serial_service.is_connected:
+            self.status_bar.showMessage("Déconnectez-vous avant de rescaner les ports.")
+            return
+        if self.scan_thread and self.scan_thread.isRunning():
+            return
+        self.status_bar.showMessage("Scan des ports série...")
+        self.refresh_ports_button.setEnabled(False)
+        self.scan_thread = PortScannerThread(self)
+        self.scan_thread.scan_finished.connect(self.on_scan_finished)
+        self.scan_thread.start()
+
+    @pyqtSlot(list)
+    def on_scan_finished(self, devices):
+        """Met à jour le sélecteur de port avec les devices trouvés."""
+        self.devices = devices
+        self.refresh_ports_button.setEnabled(True)
+        self.port_combo.clear()
+        if devices:
+            last = load_last_port()
+            preferred_idx = 0
+            for i, d in enumerate(devices):
+                self.port_combo.addItem(f"{d['name']} — {d['port']}", d["port"])
+                if d["port"] == last:
+                    preferred_idx = i
+            self.port_combo.setCurrentIndex(preferred_idx)
+            self.status_bar.showMessage(
+                f"{len(devices)} device(s) ADC détecté(s) — sélectionnez puis Connecter")
+        else:
+            self.port_combo.addItem("Aucun ADC détecté — Actualiser", None)
+            self.status_bar.showMessage("Aucun ADC détecté. Vérifiez le câble USB.")
+
+    @pyqtSlot()
     def on_connect_clicked(self):
         """Gère le clic sur le bouton de connexion."""
         # Si déjà connecté, déconnecter
@@ -308,6 +374,8 @@ class MainWindow(QMainWindow):
                 self.reset_button.setEnabled(False)
                 self.init_mpu_button.setEnabled(False)
                 self.calibrate_mpu_button.setEnabled(False)
+                self.refresh_ports_button.setEnabled(True)
+                self.port_combo.setEnabled(True)
                 
                 # Arrêter le timer MPU
                 if self.status_timer.isActive():
@@ -316,8 +384,11 @@ class MainWindow(QMainWindow):
                 self.status_bar.showMessage("Échec de la déconnexion")
             return
             
-        # Connexion au périphérique série sur /dev/cu.usbmodem1101
-        port = "/dev/cu.usbmodem1101"
+        # Connexion au périphérique sélectionné dans le menu déroulant
+        port = self.port_combo.currentData()
+        if not port:
+            self.status_bar.showMessage("Aucun port sélectionné — cliquez sur Actualiser.")
+            return
         self.status_bar.showMessage(f"Connexion en cours sur {port}...")
         self.logger.info(f"Tentative de connexion sur {port}")
         
@@ -328,6 +399,9 @@ class MainWindow(QMainWindow):
                 self.send_command_button.setEnabled(True)
                 self.reset_button.setEnabled(True)
                 self.init_mpu_button.setEnabled(True)
+                self.refresh_ports_button.setEnabled(False)
+                self.port_combo.setEnabled(False)
+                save_last_port(port)
                 
                 # Envoyer la commande STATUS pour initialiser l'état
                 self.logger.info("Envoi de la commande STATUS")

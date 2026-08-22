@@ -44,10 +44,28 @@ pip install -r requirements.txt
 python src/main.py
 ```
 
+Au démarrage, l'application **scanne automatiquement les ports série** pour
+trouver le device ADC-Auto (handshake `STATUS` → réponse JSON
+`source:"system"`). Les autres devices (monture, focuser, caméra...) ne
+parlent pas ce protocole et sont écartés. Le port trouvé apparaît dans le
+menu déroulant ; le dernier port utilisé est mémorisé et présélectionné.
+Bouton **Actualiser** pour relancer le scan après un rebranchement.
+
+## Détection automatique du port (`src/services/device_scanner.py`)
+
+- **Handshake** : envoie `STATUS` sur chaque port candidat ; un port est
+  retenu s'il répond en JSON avec `source == "system"` et `type == "data"`.
+- **Scan parallèle** : ~2-4 s pour 8 ports (ThreadPoolExecutor).
+- **DTR/RTS non touchés** : évite le reset de certains adaptateurs USB-série
+  (CP2102, CH340) à l'ouverture du port.
+- **Persistance** : dernier port mémorisé dans `~/AdcAutoClient/config.json`
+  et présélectionné au lancement suivant.
+
 ## Outil CLI de test (`adc_cli.py`)
 
 Client série minimal pour valider la connexion, le niveau et la force sans l'interface graphique.
-Dépendance : `pyserial` uniquement (déjà dans `requirements.txt`).
+Dépendance : `pyserial` uniquement (déjà dans `requirements.txt`). Sans
+`--port`, il utilise la même détection par handshake que l'UI.
 
 ```bash
 python3 adc_cli.py status              # état complet (ready, level, strength, angles)
@@ -59,7 +77,7 @@ python3 adc_cli.py                     # mode interactif (REPL)
 python3 adc_cli.py --port /dev/ttyACM0 status   # forcer le port
 ```
 
-- Le port série est auto-détecté (USB série).
+- Le port série est auto-détecté par handshake (STATUS → JSON `source:"system"`).
 - **Baudrate : 115200** (vitesse du firmware, `Serial.begin(115200)`).
 - Les messages texte brut du firmware (boot, HELP) et les logs JSON sont ignorés
   ou affichés, seules les réponses `data`/`error` sont traitées.
