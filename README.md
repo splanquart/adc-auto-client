@@ -109,6 +109,32 @@ AdcAutoClient/
 └── requirements.txt    # Dépendances
 ```
 
+## Windows — exécutable autonome (aucun Python requis)
+
+Le PC d'astronomie peut utiliser le client **sans installer Python ni venv** :
+un unique `AdcAutoClient.exe` est construit automatiquement sur GitHub Actions
+(Windows, Python 3.12, PyInstaller onefile — PyQt6 + pyserial embarqués).
+
+**Télécharger un exe :**
+
+1. Ouvrir https://github.com/splanquart/adc-auto-client/releases
+2. Prendre la dernière release `vX.Y.Z` → asset `AdcAutoClient.exe`
+3. Copier l'exe sur le PC Windows, double-cliquer, c'est tout.
+
+> Premier lancement : Windows SmartScreen peut afficher « Informations
+> supplémentaires → Exécuter quand même » (exe non signé, faux positifs
+> PyInstaller connus). Si cela devient gênant, on peut passer en one-folder
+> + installeur Inno Setup (exe signé mieux accepté).
+
+**Rebuild à la demande** (sans tag) : onglet Actions → *Build Windows EXE*
+→ *Run workflow* → l'exe est dans les *Artifacts* de la run.
+
+**Build déclenché par un tag** : `git tag v0.3.0 && git push origin v0.3.0`
+→ la Release GitHub est créée automatiquement avec l'exe joint.
+
+L'app écrit sa config et ses logs dans `%USERPROFILE%\AdcAutoClient\`
+(config.json, logs/), jamais dans le dossier de l'exe → compatible onefile.
+
 ## Développement
 
 Ce projet est conçu pour fonctionner sur plusieurs plateformes :
