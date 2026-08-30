@@ -51,6 +51,26 @@ parlent pas ce protocole et sont écartés. Le port trouvé apparaît dans le
 menu déroulant ; le dernier port utilisé est mémorisé et présélectionné.
 Bouton **Actualiser** pour relancer le scan après un rebranchement.
 
+## Lecture de l'orientation MPU (boutons ▶ Start / ■ Stop)
+
+Une fois le MPU initialisé (`Initialiser MPU`), l'UI permet de suivre
+l'orientation de l'ADC dans l'espace (pitch / roll / level) :
+
+- **▶ Start** : démarre une boucle à **2 Hz** (500 ms) qui interroge le
+  firmware avec la commande `MPU` (lecture légère : pitch/roll/level, sans
+  le calcul lourd des combinaisons d'axes) et met à jour l'indicateur
+  d'horizon en temps réel.
+- **■ Stop** : arrête la lecture ; l'étiquette affiche
+  `Info non disponible (lecture arrêtée)` et l'indicateur revient à zéro.
+- **Contrôle manuel** : la lecture ne démarre **pas** automatiquement — c'est
+  le bouton Start qui la lance. Tant que le MPU n'est pas initialisé, les
+  boutons Start/Stop sont désactivés.
+
+> ⚠️ **Performance firmware** : `MPU` est une lecture légère, adaptée à une
+> boucle rapide. Le diagnostic d'orientation (combinaisons d'axes
+> `custom_levels`) se fait à part via `MPU=custom` — calcul lourd en
+> soft-float (l'ESP32-C3 n'a pas de FPU), à ne pas appeler en boucle.
+
 ## Détection automatique du port (`src/services/device_scanner.py`)
 
 - **Handshake** : envoie `STATUS` sur chaque port candidat ; un port est

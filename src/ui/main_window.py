@@ -47,10 +47,11 @@ class MainWindow(QMainWindow):
         self.scan_thread = None         # thread de scan en cours
         self.init_ui()
         
-        # Timer pour mettre à jour régulièrement l'état du système
-        self.status_timer = QTimer(self)
-        self.status_timer.timeout.connect(self.update_status_data)
-        self.status_timer.setInterval(2500)  # Mise à jour toutes les 2.5 secondes
+        # Timer pour la lecture d'orientation du MPU (contrôlé par Start/Stop)
+        self.orientation_timer = QTimer(self)
+        self.orientation_timer.timeout.connect(self.update_mpu_orientation)
+        self.orientation_timer.setInterval(500)  # 2 lectures par seconde
+        self.mpu_reading_active = False          # État de la lecture en cours
 
         # Scan automatique des ports au démarrage
         QTimer.singleShot(200, self.start_port_scan)
@@ -140,18 +141,26 @@ class MainWindow(QMainWindow):
         mpu_buttons_layout = QHBoxLayout()
         self.init_mpu_button = QPushButton("Initialiser MPU")
         self.calibrate_mpu_button = QPushButton("Calibrer MPU")
+        self.start_mpu_button = QPushButton("▶ Start")
+        self.stop_mpu_button = QPushButton("■ Stop")
         self.mpu_status_label = QLabel("MPU: Non initialisé")
         
         # Connexion des signaux des boutons MPU
         self.init_mpu_button.clicked.connect(self.on_init_mpu_clicked)
         self.calibrate_mpu_button.clicked.connect(self.on_calibrate_mpu_clicked)
+        self.start_mpu_button.clicked.connect(self.on_start_mpu_clicked)
+        self.stop_mpu_button.clicked.connect(self.on_stop_mpu_clicked)
         
-        # Désactiver le bouton de calibration jusqu'à l'initialisation
+        # Désactiver la calibration et la lecture tant que MPU non initialisé
         self.calibrate_mpu_button.setEnabled(False)
+        self.start_mpu_button.setEnabled(False)
+        self.stop_mpu_button.setEnabled(False)
         
         # Ajout des boutons au layout
         mpu_buttons_layout.addWidget(self.init_mpu_button)
         mpu_buttons_layout.addWidget(self.calibrate_mpu_button)
+        mpu_buttons_layout.addWidget(self.start_mpu_button)
+        mpu_buttons_layout.addWidget(self.stop_mpu_button)
         mpu_buttons_layout.addWidget(self.mpu_status_label)
         
         # Ajout de l'indicateur et des boutons au layout d'horizon
@@ -239,21 +248,26 @@ class MainWindow(QMainWindow):
         if self.adc_model.mpu.initialized:
             self.init_mpu_button.setEnabled(False)
             self.calibrate_mpu_button.setEnabled(True)
-            
-            # Afficher les valeurs de pitch, roll et level
-            mpu_status = f"MPU: Initialisé | Pitch: {self.adc_model.mpu.pitch:.1f}° | Roll: {self.adc_model.mpu.roll:.1f}° | Level: {self.adc_model.mpu.level}°"
-            self.mpu_status_label.setText(mpu_status)
-            
-            # Mise à jour de l'indicateur d'horizon avec les données du MPU
-            self.horizon_indicator.set_angle(self.adc_model.mpu.level)
-            
-            # Démarrer le timer MPU s'il n'est pas déjà actif
-            if not self.status_timer.isActive() and hasattr(self.serial_service, 'is_connected') and self.serial_service.is_connected:
-                self.status_timer.start()
+            self.start_mpu_button.setEnabled(True)
+
+            if self.mpu_reading_active:
+                # Lecture en cours : afficher les valeurs live
+                mpu_status = f"MPU: Initialisé | Pitch: {self.adc_model.mpu.pitch:.1f}° | Roll: {self.adc_model.mpu.roll:.1f}° | Level: {self.adc_model.mpu.level}°"
+                self.mpu_status_label.setText(mpu_status)
+
+                # Mise à jour de l'indicateur d'horizon avec les données du MPU
+                self.horizon_indicator.set_angle(self.adc_model.mpu.level)
+            else:
+                # Lecture arrêtée : l'info n'est pas disponible
+                self.mpu_status_label.setText("MPU: Initialisé | Info non disponible (Stop)")
+                self.horizon_indicator.set_angle(0)
         else:
             self.init_mpu_button.setEnabled(hasattr(self.serial_service, 'is_connected') and self.serial_service.is_connected)
             self.calibrate_mpu_button.setEnabled(False)
+            self.start_mpu_button.setEnabled(False)
+            self.stop_mpu_button.setEnabled(False)
             self.mpu_status_label.setText("MPU: Non initialisé")
+            self.horizon_indicator.set_angle(0)
             
         # Mise à jour des boutons
         self.reset_button.setEnabled(hasattr(self.serial_service, 'is_connected') and self.serial_service.is_connected)
@@ -377,9 +391,11 @@ class MainWindow(QMainWindow):
                 self.refresh_ports_button.setEnabled(True)
                 self.port_combo.setEnabled(True)
                 
-                # Arrêter le timer MPU
-                if self.status_timer.isActive():
-                    self.status_timer.stop()
+                # Arrêter la lecture d'orientation
+                if self.orientation_timer.isActive():
+                    self.orientation_timer.stop()
+                self.mpu_reading_active = False
+                self.stop_mpu_button.setEnabled(False)
             else:
                 self.status_bar.showMessage("Échec de la déconnexion")
             return
@@ -549,4 +565,47 @@ class MainWindow(QMainWindow):
         response = self.serial_service.read_line()
         if response:
             self.logger.debug(f"Réponse STATUS: {response}")
+            self.process_response(response)
+
+    @pyqtSlot()
+    def on_start_mpu_clicked(self):
+        """Démarre la lecture d'orientation (boucle MPU à 2 Hz)."""
+        if not hasattr(self.serial_service, 'is_connected') or not self.serial_service.is_connected:
+            QMessageBox.warning(self, "Erreur", "Veuillez d'abord connecter le périphérique.")
+            return
+
+        if not self.adc_model.mpu.initialized:
+            QMessageBox.warning(self, "Erreur", "Veuillez d'abord initialiser le MPU.")
+            return
+
+        self.logger.info("Démarrage de la lecture d'orientation (2 Hz)")
+        self.mpu_reading_active = True
+        self.start_mpu_button.setEnabled(False)
+        self.stop_mpu_button.setEnabled(True)
+        self.mpu_status_label.setText("MPU: Lecture de l'orientation en cours...")
+        self.orientation_timer.start()
+        # Lecture immédiate pour ne pas attendre le premier tick
+        self.update_mpu_orientation()
+
+    @pyqtSlot()
+    def on_stop_mpu_clicked(self):
+        """Arrête la lecture d'orientation."""
+        self.logger.info("Arrêt de la lecture d'orientation")
+        self.mpu_reading_active = False
+        self.orientation_timer.stop()
+        self.start_mpu_button.setEnabled(True)
+        self.stop_mpu_button.setEnabled(False)
+        self.mpu_status_label.setText("MPU: Info non disponible (lecture arrêtée)")
+        self.horizon_indicator.set_angle(0)
+
+    def update_mpu_orientation(self):
+        """Interroge le firmware pour l'orientation (commande MPU, lecture légère)."""
+        if not hasattr(self.serial_service, 'is_connected') or not self.serial_service.is_connected:
+            return
+
+        self.logger.debug("Interrogation MPU pour l'orientation")
+        self.serial_service.send_command("MPU")
+        response = self.serial_service.read_line()
+        if response:
+            self.logger.debug(f"Réponse MPU: {response}")
             self.process_response(response)

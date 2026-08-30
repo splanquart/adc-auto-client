@@ -39,14 +39,17 @@ def main():
     send("=== ADC Control System ===")
     send("=== System Ready! ===")
 
-    def mpu_json():
+    def mpu_json(custom=False):
         d = {"source": "system", "type": "data", "command": "mpu",
              "mpu6050": {"initialized": state["mpu_init"]}}
         if state["mpu_init"]:
             d["mpu6050"].update({
-                "pitch": state["pitch"], "roll": state["roll"], "level": 7,
-                "custom_levels": {"x_only": 10.5, "y_only": 2.3, "z_only": 0.0,
-                                  "xy": 11.0, "xz": 10.5, "yz": 2.3}})
+                "pitch": state["pitch"], "roll": state["roll"], "level": 7})
+            if custom:
+                d["mpu6050"].update({
+                    "custom_levels": {"x_only": 10.5, "y_only": 2.3, "z_only": 0.0,
+                                      "xy": 11.0, "xz": 10.5, "yz": 2.3},
+                    "action": "custom_levels"})
         return d
 
     def handle(cmd):
@@ -105,6 +108,10 @@ def main():
             d["mpu6050"]["action"] = "initialize"
             d["status"] = "ok"
             send(json.dumps(d))
+        elif cmd == "MPU=CUSTOM":
+            if state["mpu_init"]:
+                d = mpu_json(custom=True)
+                send(json.dumps(d))
         elif cmd == "MPU=RAW":
             if state["mpu_init"]:
                 send(json.dumps({"source": "system", "type": "log", "level": "info",
